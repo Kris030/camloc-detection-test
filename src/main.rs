@@ -1,88 +1,63 @@
-pub mod processors;
 pub mod steps;
 
 use opencv::{
     highgui::{named_window, WINDOW_GUI_NORMAL, wait_key, destroy_all_windows, imshow},
     videoio::{CAP_ANY, VideoCapture, CAP_PROP_FRAME_WIDTH, CAP_PROP_FRAME_HEIGHT},
-    core::{self, CV_8UC3, Range},
     prelude::*,
-    imgproc,
+    core,
 };
-use steps::get_steps;
+use steps::{get_steps, init};
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
-fn main() -> Res<()> {
-    static WIN: &str = "test";
-
+pub static WIN: &str = "test";
+fn main() -> Res<()> {    
     let mut cap = VideoCapture::new(0, CAP_ANY)?;
-    if !cap.is_opened()? {
-        return Ok(());
-    }
-
+    
     named_window(WIN, WINDOW_GUI_NORMAL)?;
 
-    let w = cap.get(CAP_PROP_FRAME_WIDTH)? as usize;
-    let h = cap.get(CAP_PROP_FRAME_HEIGHT)? as usize;
+    let w = cap.get(CAP_PROP_FRAME_WIDTH)?  as i32;
+    let h = cap.get(CAP_PROP_FRAME_HEIGHT)? as i32;
 
-    let ss = get_steps().len() + 1;
+    init()?;
 
-    let sw = (ss as f64).sqrt().ceil() as usize;
-    let sh = (ss as f64 / sw as f64).ceil() as usize;
-
-    let mut img = Mat::new_nd_with_default(&[
-        (sh * h) as i32,
-        (sw * w) as i32,
-    ], CV_8UC3, 0.into())?;
     let mut frame = Mat::default();
-
     loop {
         if !cap.read(&mut frame)? {
             break;
         }
 
-        let (mut x, mut y) = (1, 0);
-        let mut si = 1;
+        let steps = get_steps(&frame, w, h)?;
 
-        frame.copy_to(
-            &mut img
-            .row_range(&Range::new(0, h as i32)?)?
-            .col_range(&Range::new(0, w as i32)?)?
-        )?;
+        let sw = steps.len() as i32;
+        let sh = steps.iter()
+            .map(|s| s.len() as i32)
+            .max()
+            .ok_or("What....")?;
 
-        for s in get_steps() {
-            let (xw, yh) = (x * w, y * h);
+        let img = Mat::new_nd_with_default(&[
+            (sh * h),
+            (sw * w),
+        ], core::CV_8UC3, 0xff.into())?;
+    
+        // frame.copy_to(
+        //     &mut img
+        //     .row_bounds(0, h)?
+        //     .col_bounds(0, w)?
+        // )?;
 
-            let (new_frame, conversion) = s(frame, w, h)?;
-            frame = if let Some(conversion) = conversion {
-                conversion(new_frame)?
-            } else {
-                new_frame
-            };
+        for (x, step) in steps.iter().enumerate() {
+            let x = x as i32;
+            let xw = x * w;
+            for (y, disp) in step.iter().enumerate() {
+                let y = y as i32;
+                let yh = y * h;
 
-            frame.copy_to(
-                &mut img
-                .row_range(&Range::new(yh as i32, ((y + 1) * h) as i32)?)?
-                .col_range(&Range::new(xw as i32, ((x + 1) * w) as i32)?)?
-            )?;
-
-            imgproc::put_text(
-                &mut img,
-                &si.to_string(),
-                core::Point::new(xw as i32 + 10, (yh + h) as i32 - 50),
-                imgproc::FONT_HERSHEY_SIMPLEX,
-                3.,
-                core::Scalar::new(255., 255., 255., 0.),
-                5,
-                imgproc::LINE_8,
-                false
-            )?;
-
-            si += 1;
-            x += 1;
-            if x == sw {
-                x = 0;
-                y += 1;
+                disp.copy_to(
+                    &mut img
+                    .row_bounds(yh, (y + 1) * h)?
+                    .col_bounds(xw, (x + 1) * w)?
+                )?;
             }
         }
 

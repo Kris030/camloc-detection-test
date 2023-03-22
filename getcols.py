@@ -7,12 +7,15 @@
 import numpy as np
 import signal
 import cv2
+import sys
+
+save_file = sys.argv[1] if len(sys.argv) > 1 else 'colors.csv'
 
 def save(*_):
     # Save calibration to a file
-    with open('colors.csv', 'w') as f:
+    with open(save_file, 'w') as f:
         f.write(f'{hMin},{sMin},{vMin},{hMax},{sMax},{vMax}')
-    print('saved values')
+    print(f'saved values to {save_file}')
     cv2.destroyAllWindows()
     exit(0)
 
@@ -20,7 +23,7 @@ signal.signal(signal.SIGINT, save)
 
 # Read config from colors.csv
 try:
-    with open('colors.csv') as f:
+    with open(save_file) as f:
         cls = list(map(int, f.read().splitlines()[0].split(',')))
         HMin = phMin = cls[0]
         SMin = psMin = cls[1]
@@ -81,7 +84,7 @@ while cv2.waitKey(1) != ord('q'):
     upper = np.array([hMax, sMax, vMax])
 
     # Create HSV Image and threshold into a range.
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(cv2.blur(frame, (10, 10)), cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, lower, upper)
     frame = cv2.bitwise_and(frame, frame, mask=mask)
 
