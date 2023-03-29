@@ -1,7 +1,8 @@
 
 use opencv::{
-    core::{self, Mat},
+    core::{self, Mat, Point, Scalar},
     prelude::*,
+    highgui,
     imgproc,
 };
 use crate::{Res, WIN};
@@ -35,9 +36,7 @@ fn hsv_filter(src: &Mat, s: [i32; 3], e: [i32; 3]) -> Res<FilterOuput> {
 
 #[allow(unused)]
 enum BitwiseOperation {
-    Xor,
-    And,
-    Or,
+    And, Xor, Or,
 }
 
 fn combine_binaries<const N: usize>(masks: [&Mat; N], operation: BitwiseOperation) -> Res<Mat> {
@@ -48,11 +47,12 @@ fn combine_binaries<const N: usize>(masks: [&Mat; N], operation: BitwiseOperatio
     }
 
     let mut dst = masks[0].clone();
+    let noarr = core::no_array();
     for m in masks.iter().skip(1) {
         match operation {
-            BitwiseOperation::Xor => core::bitwise_xor(&dst.clone(), m, &mut dst, &core::no_array())?,
-            BitwiseOperation::And => core::bitwise_and(&dst.clone(), m, &mut dst, &core::no_array())?,
-            BitwiseOperation::Or  => core::bitwise_or( &dst.clone(), m, &mut dst, &core::no_array())?,
+            BitwiseOperation::Xor => core::bitwise_xor(&dst.clone(), m, &mut dst, &noarr)?,
+            BitwiseOperation::And => core::bitwise_and(&dst.clone(), m, &mut dst, &noarr)?,
+            BitwiseOperation::Or  => core::bitwise_or( &dst.clone(), m, &mut dst, &noarr)?,
         }
     }
 
@@ -70,32 +70,37 @@ fn blur(src: &Mat, bw: i32, bh: i32) -> Res<Mat> {
 
     imgproc::blur(src, &mut dst,
         core::Size::new(bw, bh),
-        core::Point::new(-1, -1),
+        Point::new(-1, -1),
         core::BORDER_DEFAULT
     )?;
 
     Ok(dst)
 }
 
-fn remove_small_blobs(image: &Mat, width: i32, height: i32, min_size: i32) -> Res<Mat> {
+
+struct BlobbingRet {
+    blobbed: Mat,
+    centroids: Vec<(i32, core::Point)>,
+}
+
+fn remove_small_blobs(image: &Mat, width: i32, height: i32, min_size: i32) -> Res<BlobbingRet> {
     let mut labels = Mat::default();
     let mut stats = Mat::default();
     let mut centroids = Mat::default();
 
-    // find all of the connected components (white blobs in your image).
-    // labels is an image where each detected blob has a different pixel value ranging from 1 to nb_blobs - 1.
     imgproc::connected_components_with_stats(
         image, &mut labels, &mut stats, &mut centroids,
         8, core::CV_32S
     )?;
 
-    // output image with only the kept components
     let mut dst = Mat::new_nd_with_default(&[height, width], core::CV_8UC1, 0.into())?;
     
     let mut filtered = 0;
     let mut filtered_pixels = 0;
+    
+    let mut centr = Vec::with_capacity(centroids.rows() as usize - 1);
+    let mut mask = Mat::new_nd_with_default(&[height, width], core::CV_8UC1, 0.into())?;
 
-    // for every component in the image, keep it only if it's above min_size
     for blob in 1..stats.rows() {
         let size = *stats.at_2d::<i32>(blob, imgproc::CC_STAT_AREA)?;
         if size < min_size {
@@ -103,9 +108,15 @@ fn remove_small_blobs(image: &Mat, width: i32, height: i32, min_size: i32) -> Re
             filtered_pixels += size;
             continue;
         }
+        centr.push((
+            size,
+            core::Point::new(
+                *centroids.at_2d::<f64>(blob, 0)? as i32,
+                *centroids.at_2d::<f64>(blob, 1)? as i32,
+            )
+        ));
 
-        let mut mask = Mat::new_nd_with_default(&[height, width], core::CV_8UC1, 0.into())?;
-        let with     = Mat::new_nd_with_default(&[1], core::CV_8UC1, blob.into())?;
+        let with = Mat::new_nd_with_default(&[1], core::CV_8UC1, blob.into())?;
         core::compare(&labels, &with, &mut mask, core::CMP_EQ)?;
 
         dst = combine_binaries([
@@ -116,12 +127,17 @@ fn remove_small_blobs(image: &Mat, width: i32, height: i32, min_size: i32) -> Re
     let all_rows = stats.rows() - 1;
     eprintln!("filtered {filtered} ({filtered_pixels} pixels) of {} ({:.2}%)", all_rows, filtered as f64 / all_rows as f64 * 100.);
 
-    Ok(dst)
+    centr.sort_by(|(a, _), (b, _)| a.cmp(b).reverse());
+
+    Ok(BlobbingRet {
+        blobbed: dst,
+        centroids: centr,
+    })
 }
 
-static TR: &str = "tr";
+static TR: &str = "min_pixels";
 pub fn init() -> Res<()> {
-    opencv::highgui::create_trackbar(TR, WIN, None, 5000, None)?;
+    highgui::create_trackbar(TR, WIN, None, 5000, None)?;
 
     let read_colors = |fname: &str| -> Result<([i32; 3], [i32; 3]), Box<dyn std::error::Error>> {
         let s = std::fs::read_to_string(fname)?;
@@ -177,32 +193,101 @@ pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<Vec<Mat>>> {
         // &filter2.mask,
     ], BitwiseOperation::Or)?;
 
-    let min_size = opencv::highgui::get_trackbar_pos(TR, WIN)?;
-    let blobbed = remove_small_blobs(&merged, width, height, min_size)?;
+    let min_size = highgui::get_trackbar_pos(TR, WIN)?;
+    let BlobbingRet { blobbed, centroids } = remove_small_blobs(&merged, width, height, min_size)?;
 
     let blobbed_bgr = convert(&blobbed, imgproc::COLOR_GRAY2BGR)?;
 
-    let mut contours  = opencv::core::Vector::<opencv::core::Vector<opencv::core::Point>>::new();
+    let mut contours = {
+        use opencv::core::Vector;
+        Vector::<Vector<Point>>::new()
+    };
     let mut hierarchy = Mat::default();
     imgproc::find_contours_with_hierarchy(
         &blobbed,
         &mut contours,
         &mut hierarchy,
         imgproc::RETR_TREE, imgproc::CHAIN_APPROX_SIMPLE,
-        core::Point::new(0, 0)
+        Point::new(0, 0)
     )?;
 
     let mut contoured = blobbed_bgr.clone();
     imgproc::draw_contours(
         &mut contoured,
         &contours, -1,
-        core::Scalar::new(255., 0., 0., 255.),
+        Scalar::new(0., 0., 255., 255.),
         5,
         imgproc::LINE_8,
         &hierarchy,
         i32::MAX,
-        core::Point::new(0, 0)
+        Point::new(0, 0),
     )?;
+    if contours.is_empty() {
+        return 
+        Ok(vec![
+            // vec![flipped],
+            // vec![blurred],
+            vec![
+                filter0.display,
+                filter1.display,
+                // filter2.display,
+            ],
+            vec![convert(&merged, imgproc::COLOR_GRAY2BGR)?],
+            vec![blobbed_bgr],
+        ]);
+    }
+
+    imgproc::draw_marker(
+        &mut contoured,
+        centroids[0].1,
+        Scalar::new(0., 0., 255., 255.),
+        imgproc::MARKER_CROSS,
+        100, 5, imgproc::LINE_8,
+    )?;
+
+    for cnt in contours {
+        let mut approx = Mat::default();
+        // let p = cnt.get(0)?;
+        // let (x1, y1) = (p.x, p.y);
+        imgproc::approx_poly_dp(
+            &cnt,
+            &mut approx,
+            0.01 * imgproc::arc_length(&cnt, true)?,
+            true
+        )?;
+
+        if approx.rows() == 4 {
+            let br = imgproc::bounding_rect(&cnt)?;
+            let (_x, _y, w, h) = (br.x, br.y, br.width, br.height);
+
+            let ratio = w as f64 / h as f64;
+            if (0.9..=1.1).contains(&ratio) {
+                imgproc::draw_contours(
+                    &mut contoured,
+                    &core::Vector::<core::Vector<Point>>::from_iter([cnt]),
+                    -1,
+                    Scalar::new(0., 255., 255., 255.),
+                    5,
+                    imgproc::LINE_8,
+                    &core::no_array(),
+                    i32::MAX,
+                    Point::new(0, 0),
+                )?;
+            } else {
+                imgproc::draw_contours(
+                    &mut contoured,
+                    &core::Vector::<core::Vector<Point>>::from_iter([cnt]),
+                    -1,
+                    Scalar::new(0., 255., 0., 255.),
+                    5,
+                    imgproc::LINE_8,
+                    &core::no_array(),
+                    i32::MAX,
+                    Point::new(0, 0),
+                )?;
+            }
+        }
+    }
 
     Ok(vec![
         // vec![flipped],
@@ -212,7 +297,7 @@ pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<Vec<Mat>>> {
             filter1.display,
             // filter2.display,
         ],
-        vec![convert(&merged,  imgproc::COLOR_GRAY2BGR)?],
+        vec![convert(&merged, imgproc::COLOR_GRAY2BGR)?],
         vec![blobbed_bgr],
         vec![contoured],
     ])
