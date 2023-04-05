@@ -1,6 +1,6 @@
 
 use opencv::{
-    core::{self, Mat, Point, Scalar},
+    core::{self, Mat, Point, Scalar, Vector as CVec},
     prelude::*,
     highgui,
     imgproc,
@@ -164,6 +164,8 @@ pub fn init() -> Res<()> {
 static mut colors: Option<Vec<([i32; 3], [i32; 3])>> = None;
 
 pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<Vec<Mat>>> {
+    let mut ret = vec![];
+
     let flipped = flip(src)?;
     let blurred = blur(&flipped, 10, 10)?;
     
@@ -186,22 +188,26 @@ pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<Vec<Mat>>> {
         hsv_filter(&hsv, cols[1].0, cols[1].1)?,
         // hsv_filter(&hsv, cols[2].0, cols[2].1)?,
     );
+    ret.push(vec![
+        filter0.display,
+        filter1.display,
+        // filter2.display,
+    ]);
 
     let merged = combine_binaries([
         &filter0.mask,
         &filter1.mask,
         // &filter2.mask,
     ], BitwiseOperation::Or)?;
+    ret.push(vec![convert(&merged, imgproc::COLOR_GRAY2BGR)?]);
 
     let min_size = highgui::get_trackbar_pos(TR, WIN)?;
     let BlobbingRet { blobbed, centroids } = remove_small_blobs(&merged, width, height, min_size)?;
 
     let blobbed_bgr = convert(&blobbed, imgproc::COLOR_GRAY2BGR)?;
+    ret.push(vec![blobbed_bgr.clone()]);
 
-    let mut contours = {
-        use opencv::core::Vector;
-        Vector::<Vector<Point>>::new()
-    };
+    let mut contours = CVec::<CVec<Point>>::new();
     let mut hierarchy = Mat::default();
     imgproc::find_contours_with_hierarchy(
         &blobbed,
@@ -211,31 +217,22 @@ pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<Vec<Mat>>> {
         Point::new(0, 0)
     )?;
 
-    let mut contoured = blobbed_bgr.clone();
+    let mut contoured = blobbed_bgr;
     imgproc::draw_contours(
         &mut contoured,
         &contours, -1,
-        Scalar::new(0., 0., 255., 255.),
+        color(0., 0., 255.),
         5,
         imgproc::LINE_8,
         &hierarchy,
         i32::MAX,
         Point::new(0, 0),
     )?;
+
     if contours.is_empty() {
-        return 
-        Ok(vec![
-            // vec![flipped],
-            // vec![blurred],
-            vec![
-                filter0.display,
-                filter1.display,
-                // filter2.display,
-            ],
-            vec![convert(&merged, imgproc::COLOR_GRAY2BGR)?],
-            vec![blobbed_bgr],
-        ]);
+        return Ok(ret);
     }
+    ret.push(vec![contoured.clone()]);
 
     imgproc::draw_marker(
         &mut contoured,
@@ -264,9 +261,9 @@ pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<Vec<Mat>>> {
             if (0.9..=1.1).contains(&ratio) {
                 imgproc::draw_contours(
                     &mut contoured,
-                    &core::Vector::<core::Vector<Point>>::from_iter([cnt]),
+                    &CVec::<CVec<Point>>::from_iter([cnt]),
                     -1,
-                    Scalar::new(0., 255., 255., 255.),
+                    color(0., 255., 255.),
                     5,
                     imgproc::LINE_8,
                     &core::no_array(),
@@ -276,9 +273,9 @@ pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<Vec<Mat>>> {
             } else {
                 imgproc::draw_contours(
                     &mut contoured,
-                    &core::Vector::<core::Vector<Point>>::from_iter([cnt]),
+                    &CVec::<CVec<Point>>::from_iter([cnt]),
                     -1,
-                    Scalar::new(0., 255., 0., 255.),
+                    color(0., 255., 0.),
                     5,
                     imgproc::LINE_8,
                     &core::no_array(),
@@ -289,16 +286,11 @@ pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<Vec<Mat>>> {
         }
     }
 
-    Ok(vec![
-        // vec![flipped],
-        // vec![blurred],
-        vec![
-            filter0.display,
-            filter1.display,
-            // filter2.display,
-        ],
-        vec![convert(&merged, imgproc::COLOR_GRAY2BGR)?],
-        vec![blobbed_bgr],
-        vec![contoured],
-    ])
+    ret.push(vec![contoured.clone()]);
+
+    Ok(ret)
+}
+
+fn color(r: f64, g: f64, b: f64) -> Scalar {
+    Scalar::new(r, g, b, 255.)
 }
