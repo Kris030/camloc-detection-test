@@ -6,20 +6,21 @@ use opencv::{
     prelude::*,
     core,
 };
-use steps::{get_steps, init};
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
 pub static WIN: &str = "test";
-fn main() -> Res<()> {    
+fn main() -> Res<()> {
     let mut cap = VideoCapture::new(0, CAP_ANY)?;
     
     named_window(WIN, WINDOW_GUI_NORMAL)?;
 
-    let w = cap.get(CAP_PROP_FRAME_WIDTH)?  as i32;
-    let h = cap.get(CAP_PROP_FRAME_HEIGHT)? as i32;
+    let (w, h) = (
+        cap.get(CAP_PROP_FRAME_WIDTH)?  as i32,
+        cap.get(CAP_PROP_FRAME_HEIGHT)? as i32
+    );
 
-    init()?;
+    steps::init()?;
 
     let mut frame = Mat::default();
     loop {
@@ -27,7 +28,7 @@ fn main() -> Res<()> {
             break;
         }
 
-        let steps = get_steps(&frame, w, h)?;
+        let steps = steps::get_steps(&frame, w, h)?;
 
         let sw = steps.len() as i32;
         let sh = steps.iter()
