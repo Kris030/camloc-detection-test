@@ -1,23 +1,22 @@
-
 use opencv::{
-    core::{self, Mat, Point, Scalar, Rect},
+    core::{self, Mat, Point, Rect},
     prelude::*,
     highgui,
     imgproc,
 };
-use crate::{Res, WIN};
+use crate::{Res, WIN, utils};
 
-fn flip(src: &Mat) -> Res<Mat> {
+pub fn flip(src: &Mat) -> Res<Mat> {
     let mut dst = Mat::default();
     core::flip(&src, &mut dst, 1)?;
     Ok(dst)
 }
 
-struct FilterOuput {
+pub struct FilterOuput {
     display: Mat,
     mask: Mat,
 }
-fn hsv_filter(src: &Mat, s: [i32; 3], e: [i32; 3]) -> Res<FilterOuput> {
+pub fn hsv_filter(src: &Mat, s: [i32; 3], e: [i32; 3]) -> Res<FilterOuput> {
     let mut mask = Mat::default();
 
     core::in_range(
@@ -34,12 +33,11 @@ fn hsv_filter(src: &Mat, s: [i32; 3], e: [i32; 3]) -> Res<FilterOuput> {
     Ok(FilterOuput { display, mask })
 }
 
-#[allow(unused)]
-enum BitwiseOperation {
+pub enum BitwiseOperation {
     And, Xor, Or,
 }
 
-fn combine_binaries<const N: usize>(masks: [&Mat; N], operation: BitwiseOperation) -> Res<Mat> {
+pub fn combine_binaries<const N: usize>(masks: [&Mat; N], operation: BitwiseOperation) -> Res<Mat> {
     match N {
         0 => return Err("Nothing provided".into()),
         2 => return Ok(core::or_mat_mat(masks[0], masks[1])?.to_mat()?),
@@ -59,14 +57,13 @@ fn combine_binaries<const N: usize>(masks: [&Mat; N], operation: BitwiseOperatio
     Ok(dst)
 }
 
-fn convert(src: &Mat, code: i32) -> Res<Mat> {
+pub fn convert(src: &Mat, code: i32) -> Res<Mat> {
     let mut dst = Mat::default();
     imgproc::cvt_color(&src, &mut dst, code, 0)?;
     Ok(dst)
 }
 
-#[allow(unused)]
-fn blur(src: &Mat, bw: i32, bh: i32) -> Res<Mat> {
+pub fn blur(src: &Mat, bw: i32, bh: i32) -> Res<Mat> {
     let mut dst = Mat::default();
 
     imgproc::blur(src, &mut dst,
@@ -78,9 +75,7 @@ fn blur(src: &Mat, bw: i32, bh: i32) -> Res<Mat> {
     Ok(dst)
 }
 
-#[allow(unused)]
-#[derive(Debug)]
-struct BlobInfo {
+pub struct BlobInfo {
     area: i32,
     centroid: Point,
     
@@ -96,13 +91,11 @@ impl std::fmt::Display for BlobInfo {
     }
 }
 
-#[allow(unused)]
-struct BlobbingRet {
+pub struct BlobbingRet {
     blobbed: Mat,
     info: Vec<BlobInfo>,
 }
-
-fn remove_small_blobs(image: &Mat, width: i32, height: i32, min_size: i32) -> Res<BlobbingRet> {
+pub fn remove_blobs(image: &Mat, width: i32, height: i32, min_size: i32) -> Res<BlobbingRet> {
     let mut labels = Mat::default();
     let mut stats = Mat::default();
     let mut centroids = Mat::default();
@@ -113,18 +106,13 @@ fn remove_small_blobs(image: &Mat, width: i32, height: i32, min_size: i32) -> Re
     )?;
 
     let mut dst = Mat::new_nd_with_default(&[height, width], core::CV_8UC1, 0.into())?;
-    
-    // let mut filtered = 0;
-    // let mut filtered_pixels = 0;
-    
+
     let mut info = Vec::with_capacity(centroids.rows() as usize - 1);
     let mut mask = Mat::new_nd_with_default(&[height, width], core::CV_8UC1, 0.into())?;
 
     for blob in 1..stats.rows() {
         let area = *stats.at_2d(blob, imgproc::CC_STAT_AREA)?;
         if area < min_size {
-            // filtered += 1;
-            // filtered_pixels += area;
             continue;
         }
         info.push(
@@ -151,9 +139,6 @@ fn remove_small_blobs(image: &Mat, width: i32, height: i32, min_size: i32) -> Re
         ], BitwiseOperation::Or)?;
     }
 
-    // let all_rows = stats.rows() - 1;
-    // eprintln!("filtered {filtered} ({filtered_pixels} pixels) of {} ({:.2}%)", all_rows, filtered as f64 / all_rows as f64 * 100.);
-
     info.sort_by(|a, b| a.area.cmp(&b.area).reverse());
 
     Ok(BlobbingRet {
@@ -162,9 +147,37 @@ fn remove_small_blobs(image: &Mat, width: i32, height: i32, min_size: i32) -> Re
     })
 }
 
-static TR: &str = "min_pixels";
+pub fn close(src: &Mat, kernel_size: i32, iterations: i32) -> Res<Mat> {
+    let mut dst = Mat::default();
+
+    imgproc::morphology_ex(
+        src,
+        &mut dst,
+        imgproc::MORPH_CLOSE,
+        &Mat::ones(kernel_size, kernel_size, core::CV_8U)?,
+        Point::new(-1, -1),
+        iterations,
+        core::BORDER_CONSTANT,
+        imgproc::morphology_default_border_value()?,
+    )?;
+
+    Ok(dst)
+}
+
+static TR_MIN_SIZE: &str = "min pixels";
+static TR_KERNEL_SIZE: &str = "kernel size";
+static TR_ITERATIONS: &str = "iterations";
+
+static mut COLORS: Option<Vec<([i32; 3], [i32; 3])>> = None;
 pub fn init() -> Res<()> {
-    highgui::create_trackbar(TR, WIN, None, 10_000, None)?;
+    highgui::create_trackbar(TR_MIN_SIZE, WIN, None, 1000, None)?;
+    highgui::set_trackbar_pos(TR_MIN_SIZE, WIN, 30)?;
+
+    highgui::create_trackbar(TR_KERNEL_SIZE, WIN, None, 20, None)?;
+    highgui::set_trackbar_pos(TR_KERNEL_SIZE, WIN, 5)?;
+
+    highgui::create_trackbar(TR_ITERATIONS, WIN, None, 10, None)?;
+    highgui::set_trackbar_pos(TR_ITERATIONS, WIN, 1)?;
 
     let read_colors = |fname: &str| -> Res<([i32; 3], [i32; 3])> {
         let s = std::fs::read_to_string(fname)?;
@@ -177,7 +190,7 @@ pub fn init() -> Res<()> {
     };
 
     unsafe {
-        colors = Some(vec![
+        COLORS = Some(vec![
             read_colors("test/color0.csv")?,
             read_colors("test/color1.csv")?,
             read_colors("test/color2.csv")?,
@@ -187,127 +200,130 @@ pub fn init() -> Res<()> {
     Ok(())
 }
 
-#[allow(non_upper_case_globals)]
-static mut colors: Option<Vec<([i32; 3], [i32; 3])>> = None;
-
-pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<Vec<Mat>>> {
-    let mut ret = vec![];
-
+pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<(&'static str, Vec<Mat>)>> {
     let flipped = flip(src)?;
-    ret.push(vec![flipped.clone()]);
+
     // let blurred = blur(&flipped, 10, 10)?;
-    // ret.push(vec![blurred.clone()]);
+    // ret.push(("Blurred", vec![blurred.clone()]));
     
     let hsv = convert(&flipped, imgproc::COLOR_BGR2HSV)?;
 
-    let Some(cols) = (unsafe { &colors }) else {
+    let Some(cols) = (unsafe { &COLORS }) else {
         return Err("No colors?".into());
     };
 
-    let (
-        filter0,
-        filter1,
-    ) = (
+    let (filter0, filter1) = (
         hsv_filter(&hsv, cols[0].0, cols[0].1)?,
         hsv_filter(&hsv, cols[1].0, cols[1].1)?,
     );
-    ret.push(vec![
-        filter0.display,
-        filter1.display,
-    ]);
 
-    let min_size = highgui::get_trackbar_pos(TR, WIN)?;
-    let (blobbed0, blobbed1) = (
-        remove_small_blobs(&filter0.mask, width, height, min_size)?,
-        remove_small_blobs(&filter1.mask, width, height, min_size)?
+    let close_kernel_size = highgui::get_trackbar_pos(TR_KERNEL_SIZE, WIN)?;
+    let close_iterations = highgui::get_trackbar_pos(TR_ITERATIONS, WIN)?;
+    let (closed0, closed1) = (
+        close(&filter0.mask, close_kernel_size, close_iterations)?,
+        close(&filter1.mask, close_kernel_size, close_iterations)?,
     );
-    ret.push(vec![
-        convert(&blobbed0.blobbed, imgproc::COLOR_GRAY2BGR)?,
-        convert(&blobbed1.blobbed, imgproc::COLOR_GRAY2BGR)?,
-    ]);
 
-    let mut candidates = vec![];
+    let min_size = highgui::get_trackbar_pos(TR_MIN_SIZE, WIN)?;
+    let (blobbed0, blobbed1) = (
+        remove_blobs(&closed0, width, height, min_size)?,
+        remove_blobs(&closed1, width, height, min_size)?
+    );
+
+    let mut to_draw = flipped.clone();
+
+    let mut cand: Option<(f64, [&BlobInfo; 2])> = None;
     for b0 in &blobbed0.info {
         for b1 in &blobbed1.info {
-            if shapes_similar(b0, b1) {
-                candidates.push([b0, b1]);
+            let similarity = calc_similarity(b0, b1);
+            let cap = 0.75;
+            if similarity < cap {
+                continue;
             }
+            if cand.is_none() || cand.unwrap().0 < similarity {
+                cand = Some((similarity, [b0, b1]));
+            }
+
+            let c = (similarity - cap) / (1. - cap);
+            let color = utils::color(255.0 * (1.0 - c), 255.0 * c, 0.);
+            for b in [b0, b1] {
+                imgproc::rectangle(
+                    &mut to_draw,
+                    b.bbox,
+                    color,
+                    5,
+                    imgproc::LINE_8,
+                    0,
+                )?;
+            }
+
+            imgproc::put_text(
+                &mut to_draw,
+                &format!("{:.0}", similarity * 100.),
+                b0.bbox.tl(),
+                imgproc::FONT_HERSHEY_SIMPLEX,
+                2.,
+                color,
+                5,
+                imgproc::LINE_8,
+                false
+            )?;
         }
     }
-    if candidates.is_empty() {
-        return Ok(ret);
-    }
 
-    // TODO: if there's more
-    let cand = candidates[0];
-    println!("{:.2}",
-        ((cand[0].bbox.width as f64 + cand[0].bbox.width as f64) / 2.) /
-        (cand[1].bbox.height as f64 + cand[1].bbox.height as f64)
-    );
+    let mut ret = vec![
+        ("Flipped", vec![flipped]),
+        ("HSV Filter", vec![
+            filter0.display,
+            filter1.display,
+        ]),
+        ("Closing", vec![
+            convert(&closed0, imgproc::COLOR_GRAY2BGR)?,
+            convert(&closed1, imgproc::COLOR_GRAY2BGR)?,
+        ]),
+        ("Blobbing", vec![
+            convert(&blobbed0.blobbed, imgproc::COLOR_GRAY2BGR)?,
+            convert(&blobbed1.blobbed, imgproc::COLOR_GRAY2BGR)?,
+        ]),
+        ("Result", vec![to_draw]),
+    ];
+    let Some((_, [c0, c1])) = cand else {
+        return Ok(ret);
+    };
 
     let final_pos = Point::new(
-        (cand[0].centroid.x + cand[1].centroid.x) / 2,
-        (cand[0].centroid.y + cand[1].centroid.y) / 2,
+        (c0.centroid.x + c1.centroid.x) / 2,
+        (c0.centroid.y + c1.centroid.y) / 2,
     );
 
-    let mut to_draw = flipped;
-    for c in &cand {
-        imgproc::rectangle(
-            &mut to_draw,
-            Rect::new(
-                c.bbox.x,
-                c.bbox.y,
-                c.bbox.width,
-                c.bbox.height,
-            ),
-            color(255.0, 0., 0.),
-            5,
-            imgproc::LINE_8,
-            0,
-        )?;
-    }
+    let ind = ret.len() - 1;
     imgproc::draw_marker(
-        &mut to_draw,
+        &mut (ret[ind].1[0]),
         final_pos,
-        color(255.0, 0., 0.),
-        imgproc::MARKER_CROSS,
+        utils::color(255.0, 0., 0.),
+        imgproc::MARKER_TILTED_CROSS,
         50,
         10,
         imgproc::LINE_8,
     )?;
-    ret.push(vec![to_draw]);
 
     Ok(ret)
 }
 
-pub fn same_magnitude<T>(mut i: T, mut j: T, mag: f64) -> bool
-where T: PartialOrd + Into<f64> + Copy {
-    if i > j {
-        (i, j) = (j, i);
-    }
-    let r: f64 = i.into() / j.into();
-    (1. - r) < mag
-}
-
-fn shapes_similar(b0: &BlobInfo, b1: &BlobInfo) -> bool {
-    let areas = same_magnitude(b0.area, b1.area, 0.3);
-    let xpos =  same_magnitude(b0.centroid.x, b1.centroid.x, 0.1);
-    let y_pos_and_height = same_magnitude(
-        (b0.centroid.y - b1.centroid.y).abs(),
-        (b0.bbox.height + b1.bbox.height) / 2,
-        0.2
+fn calc_similarity(b0: &BlobInfo, b1: &BlobInfo) -> f64 {
+    use utils::sim_perc as sim;
+    let areas = sim(b0.area, b1.area);
+    let xpos = sim(b0.centroid.x, b1.centroid.x);
+    let y_pos_and_height = sim(
+        (b0.centroid.y - b1.centroid.y).abs() as f64,
+        (b0.bbox.height + b1.bbox.height) as f64 * 0.5,
     );
-    let make_square = same_magnitude(
-        ((b0.bbox.width as f64 + b0.bbox.width as f64) / 2.) /
+    let make_square = sim(
+        ((b0.bbox.width as f64 + b0.bbox.width as f64) * 0.5) /
         (b1.bbox.height as f64 + b1.bbox.height as f64),
         1.,
-        0.2
     );
 
-    areas && xpos && y_pos_and_height && make_square
-}
-
-#[allow(unused)]
-fn color(r: f64, g: f64, b: f64) -> Scalar {
-    Scalar::new(b, g, r, 255.)
+    let cs = [areas, xpos, y_pos_and_height, make_square];
+    cs.iter().sum::<f64>() / (cs.len() as f64)
 }

@@ -1,3 +1,5 @@
+#!/bin/python
+
 from math import sqrt, ceil
 from steps import steps
 import numpy as np
