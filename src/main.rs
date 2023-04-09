@@ -2,9 +2,9 @@ pub mod steps;
 pub mod utils;
 
 use opencv::{
-    highgui::{named_window, WINDOW_GUI_NORMAL, wait_key, destroy_all_windows, imshow},
-    videoio::{CAP_ANY, VideoCapture, CAP_PROP_FRAME_WIDTH, CAP_PROP_FRAME_HEIGHT},
     prelude::*,
+    videoio,
+    highgui,
     imgproc,
     core,
 };
@@ -12,18 +12,20 @@ use opencv::{
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
 pub static WIN: &str = "test";
+
 fn main() -> Res<()> {
-    let mut cap = VideoCapture::new(0, CAP_ANY)?;
-    
-    named_window(WIN, WINDOW_GUI_NORMAL)?;
+    let mut cap = videoio::VideoCapture::new(0, videoio::CAP_ANY)?;
+
+    highgui::named_window(WIN, highgui::WINDOW_NORMAL)?;
 
     let (w, h) = (
-        cap.get(CAP_PROP_FRAME_WIDTH)?  as i32,
-        cap.get(CAP_PROP_FRAME_HEIGHT)? as i32,
+        cap.get(videoio::CAP_PROP_FRAME_WIDTH)?  as i32,
+        cap.get(videoio::CAP_PROP_FRAME_HEIGHT)? as i32,
     );
 
     steps::init()?;
-
+    
+    let mut only_result = false;
     let mut frame = Mat::default();
     loop {
         if !cap.read(&mut frame)? {
@@ -31,6 +33,11 @@ fn main() -> Res<()> {
         }
 
         let steps = steps::get_steps(&frame, w, h)?;
+        let steps = if only_result {
+            &steps[(steps.len() - 1)..]
+        } else {
+            &steps[..]
+        };
 
         let sw = steps.len() as i32;
         let sh = steps.iter()
@@ -70,14 +77,16 @@ fn main() -> Res<()> {
             }
         }
 
-        imshow(WIN, &img)?;
+        highgui::imshow(WIN, &img)?;
 
-        if wait_key(1)? == 'q' as i32 {
-            break;
+        match highgui::wait_key(1)? {
+            /* space */ 32 => only_result = !only_result,
+            /* q */    113 => break,
+            _ => (),
         }
     }
 
-    destroy_all_windows()?;
+    highgui::destroy_all_windows()?;
 
     Ok(())
 }

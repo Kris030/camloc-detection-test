@@ -165,19 +165,45 @@ pub fn close(src: &Mat, kernel_size: i32, iterations: i32) -> Res<Mat> {
 }
 
 static TR_MIN_SIZE: &str = "min pixels";
+
 static TR_KERNEL_SIZE: &str = "kernel size";
 static TR_ITERATIONS: &str = "iterations";
 
+static TR_W_AREAS: &str       = "W           areas";
+static TR_W_XPOS: &str        = "W            xpos";
+static TR_W_Y_TO_HEIGHT: &str = "W y to height";
+static TR_W_MAKE_SQUARE: &str = "W          square";
+
+static TR_SIM_CAP: &str = "similarity cap";
+
+const C_W_MAX: i32 = 50;
+
 static mut COLORS: Option<Vec<([i32; 3], [i32; 3])>> = None;
 pub fn init() -> Res<()> {
-    highgui::create_trackbar(TR_MIN_SIZE, WIN, None, 1000, None)?;
-    highgui::set_trackbar_pos(TR_MIN_SIZE, WIN, 30)?;
+    // trackbars
+    {
+        use highgui::{create_trackbar as create, set_trackbar_pos as set};
 
-    highgui::create_trackbar(TR_KERNEL_SIZE, WIN, None, 20, None)?;
-    highgui::set_trackbar_pos(TR_KERNEL_SIZE, WIN, 5)?;
+        create(TR_MIN_SIZE, WIN, None, 1000, None)?;
+        set(TR_MIN_SIZE, WIN, 30)?;
 
-    highgui::create_trackbar(TR_ITERATIONS, WIN, None, 10, None)?;
-    highgui::set_trackbar_pos(TR_ITERATIONS, WIN, 1)?;
+        create(TR_KERNEL_SIZE, WIN, None, 20, None)?;
+        create(TR_ITERATIONS, WIN, None, 10, None)?;
+        set(TR_KERNEL_SIZE, WIN, 5)?;
+        set(TR_ITERATIONS, WIN, 1)?;
+
+        create(TR_W_AREAS, WIN, None, 100, None)?;
+        set(TR_W_AREAS, WIN, 50)?;
+        create(TR_W_XPOS, WIN, None, 100, None)?;
+        set(TR_W_XPOS, WIN, 50)?;
+        create(TR_W_Y_TO_HEIGHT, WIN, None, 100, None)?;
+        set(TR_W_Y_TO_HEIGHT, WIN, 50)?;
+        create(TR_W_MAKE_SQUARE, WIN, None, 100, None)?;
+        set(TR_W_MAKE_SQUARE, WIN, 50)?;
+
+        create(TR_SIM_CAP, WIN, None, 100, None)?;
+        set(TR_SIM_CAP, WIN, 50)?;
+    }
 
     let read_colors = |fname: &str| -> Res<([i32; 3], [i32; 3])> {
         let s = std::fs::read_to_string(fname)?;
@@ -232,26 +258,33 @@ pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<(&'static str, V
 
     let mut to_draw = flipped.clone();
 
-    let mut cand: Option<(f64, [&BlobInfo; 2])> = None;
-    for b0 in &blobbed0.info {
-        for b1 in &blobbed1.info {
-            let similarity = calc_similarity(b0, b1);
-            let cap = 0.75;
+    let mut cand: Option<(f64, (&BlobInfo, &BlobInfo))> = None;
+    for mut b0 in &blobbed0.info {
+        for mut b1 in &blobbed1.info {
+            if b0.centroid.y > b1.centroid.y {
+                (b1, b0) = (b0, b1);
+            }
+
+            let (similarity, components) = get_score(b0, b1)?;
+            let cap = highgui::get_trackbar_pos(TR_SIM_CAP, WIN)? as f64 * 0.01;
             if similarity < cap {
                 continue;
             }
             if cand.is_none() || cand.unwrap().0 < similarity {
-                cand = Some((similarity, [b0, b1]));
+                cand = Some((similarity, (b0, b1)));
             }
 
             let c = (similarity - cap) / (1. - cap);
             let color = utils::color(255.0 * (1.0 - c), 255.0 * c, 0.);
+
+            let scale = b0.bbox.width as f64 / width as f64;
+
             for b in [b0, b1] {
                 imgproc::rectangle(
                     &mut to_draw,
                     b.bbox,
                     color,
-                    5,
+                    (scale * 10. * 2.5) as i32,
                     imgproc::LINE_8,
                     0,
                 )?;
@@ -262,12 +295,44 @@ pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<(&'static str, V
                 &format!("{:.0}", similarity * 100.),
                 b0.bbox.tl(),
                 imgproc::FONT_HERSHEY_SIMPLEX,
-                2.,
+                scale * 10.,
                 color,
-                5,
+                (scale * 10. * 2.5) as i32,
                 imgproc::LINE_8,
                 false
             )?;
+
+            let rad = scale * 10. * 7.5;
+            let clen = components.len();
+            for (i, (c, p)) in components.into_iter().enumerate() {
+                let center = Point::new(
+                    b0.bbox.x + b0.bbox.width / 2
+                        + (i - clen / 2) as i32
+                            * ((rad * 2.) as i32 + 5),
+                    b0.bbox.y
+                );
+                imgproc::circle(
+                    &mut to_draw,
+                    center,
+                    rad as i32,
+                    utils::color(255.0 * (1.0 - c), 255.0 * c, 0.),
+                    imgproc::FILLED,
+                    imgproc::LINE_8,
+                    0,
+                )?;
+                if p {
+                    let thickness = scale * 10. * 2.;
+                    imgproc::circle(
+                        &mut to_draw,
+                        center,
+                        (rad + thickness) as i32,
+                        utils::color(255.0, 0., 0.),
+                        thickness as i32,
+                        imgproc::LINE_8,
+                        0,
+                    )?;
+                }
+            }
         }
     }
 
@@ -287,7 +352,7 @@ pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<(&'static str, V
         ]),
         ("Result", vec![to_draw]),
     ];
-    let Some((_, [c0, c1])) = cand else {
+    let Some((_, (c0, c1))) = cand else {
         return Ok(ret);
     };
 
@@ -297,24 +362,39 @@ pub fn get_steps(src: &Mat, width: i32, height: i32) -> Res<Vec<(&'static str, V
     );
 
     let ind = ret.len() - 1;
+    let to_draw = &mut (ret[ind].1[0]);
+
     imgproc::draw_marker(
-        &mut (ret[ind].1[0]),
+        to_draw,
         final_pos,
         utils::color(255.0, 0., 0.),
         imgproc::MARKER_TILTED_CROSS,
         50,
-        10,
+        5,
         imgproc::LINE_8,
     )?;
 
     Ok(ret)
 }
 
-fn calc_similarity(b0: &BlobInfo, b1: &BlobInfo) -> f64 {
+const SINGLE_COMPONENT_PENALTY_THRESHOLD: f64 = 0.3;
+const SINGLE_COMPONENT_PENALTY: f64 = 0.75;
+fn get_score(b0: &BlobInfo, b1: &BlobInfo) -> Res<(f64, Vec<(f64, bool)>)> {
     use utils::sim_perc as sim;
+
     let areas = sim(b0.area, b1.area);
-    let xpos = sim(b0.centroid.x, b1.centroid.x);
-    let y_pos_and_height = sim(
+
+    let bboxes_overlap =
+        (b0.bbox.x <= (b1.bbox.x + b1.bbox.width)) &&
+        ((b0.bbox.x + b0.bbox.width) >= b1.bbox.x);
+
+    let xpos = if bboxes_overlap {
+        sim(b0.centroid.x, b1.centroid.x) 
+    } else {
+        0.
+    };
+
+    let y_to_height = sim(
         (b0.centroid.y - b1.centroid.y).abs() as f64,
         (b0.bbox.height + b1.bbox.height) as f64 * 0.5,
     );
@@ -324,6 +404,32 @@ fn calc_similarity(b0: &BlobInfo, b1: &BlobInfo) -> f64 {
         1.,
     );
 
-    let cs = [areas, xpos, y_pos_and_height, make_square];
-    cs.iter().sum::<f64>() / (cs.len() as f64)
+    let values = [areas, xpos, y_to_height, make_square];
+    let weights = [
+        highgui::get_trackbar_pos(TR_W_AREAS,       WIN)?,
+        highgui::get_trackbar_pos(TR_W_XPOS,        WIN)?,
+        highgui::get_trackbar_pos(TR_W_Y_TO_HEIGHT, WIN)?,
+        highgui::get_trackbar_pos(TR_W_MAKE_SQUARE, WIN)?,
+    ];
+    let weights = weights.map(|w| w as f64 / C_W_MAX as f64);
+
+    let (mut sum, mut weigth_sum, mut total_penalty) = (0., 0., 1.);
+
+    let mut got_penalties = [false; 4];
+    for ((component_value, component_weight), penalty) in values.into_iter().zip(weights).zip(&mut got_penalties) {
+        let weighted_value = component_value * component_weight;
+
+        sum += weighted_value;
+        weigth_sum += component_weight;
+
+        if weighted_value < SINGLE_COMPONENT_PENALTY_THRESHOLD {
+            *penalty = true;
+            total_penalty *= SINGLE_COMPONENT_PENALTY;
+        }
+    }
+
+    Ok((
+        (sum / weigth_sum) * total_penalty,
+        values.into_iter().zip(got_penalties).collect(),
+    ))
 }
